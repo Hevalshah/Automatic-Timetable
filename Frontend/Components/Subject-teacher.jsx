@@ -1,178 +1,143 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
+import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
 
-// Helper: Calculate Subject Assign Point (SAP) based on preference rank
-const calculateSAP = (teacher, subject) => {
-  const prefIndex = teacher.preferences.indexOf(subject.name);
-  return prefIndex >= 0 ? (teacher.preferences.length - prefIndex) : 0;
-};
+// Dummy data simulating XLSX input
+const semesters = Array.from({ length: 8 }, (_, i) => `Semester ${i + 1}`);
 
-// Helper: Check if teacher is senior
-const isSenior = (teacher) => teacher.designation === 'Senior';
+const teachersData = [
+  { id: 1, code: 'T001', weeklyLoad: 0 },
+  { id: 2, code: 'T002', weeklyLoad: 0 },
+  { id: 3, code: 'T003', weeklyLoad: 0 },
+  { id: 4, code: 'T004', weeklyLoad: 0 },
+];
 
-// Helper: Check if teacher is available for the subject and within load
-const isAvailable = (teacher, subject, teacherLoads) =>
-  teacher.expertise.includes(subject.name) &&
-  (teacherLoads[teacher.id] + subject.hours) <= teacher.maxLoad;
+const subjectsData = [
+  { id: 'sub1', name: 'OS' },
+  { id: 'sub2', name: 'DSA' },
+  { id: 'sub3', name: 'DBMS' },
+];
 
-// Helper: Get teacher priority for fixed slots (seniority, SAP, load)
-const getTeacherPriority = (a, b, subject, preferenceMatrix, teacherLoads) => {
-  if (isSenior(a) && !isSenior(b)) return -1;
-  if (isSenior(b) && !isSenior(a)) return 1;
-  if (preferenceMatrix[a.id][subject.id] !== preferenceMatrix[b.id][subject.id])
-    return preferenceMatrix[b.id][subject.id] - preferenceMatrix[a.id][subject.id];
-  return teacherLoads[a.id] - teacherLoads[b.id];
-};
+const preferenceLevels = ['Not Preferred', 'Preferred', 'Highly Preferred', 'Most Preferred'];
 
-const SubjectAllocationPage = () => {
-  const [teachers, setTeachers] = useState([]);
-  const [subjects, setSubjects] = useState([]);
-  const [allocations, setAllocations] = useState([]);
-  const [teacherLoads, setTeacherLoads] = useState({});
-  const [preferenceMatrix, setPreferenceMatrix] = useState({});
-  const [loading, setLoading] = useState(true);
+export default function TeacherAssignmentPage() {
+  const [selectedSemester, setSelectedSemester] = useState(semesters[0]);
+  const [assignments, setAssignments] = useState({});
 
-  // Fetch teachers and subjects from backend
-  useEffect(() => {
-    // Replace these with your actual API endpoints
-    const fetchTeachers = fetch('/api/teachers').then(res => res.json());
-    const fetchSubjects = fetch('/api/subjects').then(res => res.json());
-
-    Promise.all([fetchTeachers, fetchSubjects])
-      .then(([teachersData, subjectsData]) => {
-        setTeachers(teachersData);
-        setSubjects(subjectsData);
-        setLoading(false);
-      })
-      .catch(error => {
-        console.error('Error fetching data:', error);
-        setLoading(false);
-      });
-  }, []);
-
-  // Initialize teacher loads and preference matrix when data is loaded
-  useEffect(() => {
-    if (teachers.length === 0 || subjects.length === 0) return;
-
-    const initialLoads = {};
-    const initialMatrix = {};
-    teachers.forEach(teacher => {
-      initialLoads[teacher.id] = 0;
-      subjects.forEach(subject => {
-        if (!initialMatrix[teacher.id]) initialMatrix[teacher.id] = {};
-        initialMatrix[teacher.id][subject.id] = calculateSAP(teacher, subject);
-      });
+  const handleSubjectClick = (teacherId, subjectId) => {
+    setAssignments(prev => {
+      const teacherKey = teacherId.toString();
+      const teacherAssignments = { ...prev[teacherKey] } || {};
+      const currentLevel = teacherAssignments[subjectId] || 0;
+      const nextLevel = (currentLevel + 1) % 4; // Cycles through 0-3
+      return {
+        ...prev,
+        [teacherKey]: {
+          ...teacherAssignments,
+          [subjectId]: nextLevel
+        }
+      };
     });
-    setTeacherLoads(initialLoads);
-    setPreferenceMatrix(initialMatrix);
-  }, [teachers, subjects]);
+  };
 
-  // Allocation logic for fixed slots and electives
-  useEffect(() => {
-    if (teachers.length === 0 || subjects.length === 0) return;
+  const calculateWeeklyLoad = (teacherId) => {
+    const teacherAssignments = assignments[teacherId.toString()] || {};
+    return Object.keys(teacherAssignments).length; // 1 subject = 1 hour
+  };
 
-    let newAllocations = [];
-    let currentTeacherLoads = {...teacherLoads};
+  const handleNext = async () => {
+    const formatted = Object.entries(assignments).map(([teacherIdStr, subjects]) => ({
+      teacherId: parseInt(teacherIdStr),
+      assignments: Object.entries(subjects).map(([subjectId, pref]) => ({
+        subjectId,
+        preference: preferenceLevels[pref]
+      }))
+    }));
 
-    // Fixed slots first: prioritize seniority, SAP, and load
-    subjects
-      .filter(subject => subject.fixedSlot)
-      .forEach(subject => {
-        const suitableTeachers = teachers
-          .filter(teacher => isAvailable(teacher, subject, currentTeacherLoads))
-          .sort((a, b) => getTeacherPriority(a, b, subject, preferenceMatrix, currentTeacherLoads));
-
-        if (suitableTeachers.length > 0) {
-          const assignedTeacher = suitableTeachers[0];
-          newAllocations.push({ subjectId: subject.id, teacherId: assignedTeacher.id });
-          currentTeacherLoads[assignedTeacher.id] += subject.hours;
-        }
+    try {
+      const response = await fetch('/api/save-assignments', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ semester: selectedSemester, data: formatted })
       });
 
-    // Elective subjects: ensure same time availability (conceptual)
-    // In practice, you would schedule all elective teachers at the same time
-    subjects
-      .filter(subject => subject.elective)
-      .forEach(subject => {
-        const suitableTeachers = teachers
-          .filter(teacher => isAvailable(teacher, subject, currentTeacherLoads))
-          .sort((a, b) => getTeacherPriority(a, b, subject, preferenceMatrix, currentTeacherLoads));
+      if (!response.ok) throw new Error('Failed to save assignments');
 
-        if (suitableTeachers.length > 0) {
-          const assignedTeacher = suitableTeachers[0];
-          newAllocations.push({ subjectId: subject.id, teacherId: assignedTeacher.id });
-          currentTeacherLoads[assignedTeacher.id] += subject.hours;
-        }
-      });
-
-    setAllocations(newAllocations);
-    setTeacherLoads(currentTeacherLoads);
-  }, [teachers, subjects, teacherLoads, preferenceMatrix]);
-
-  // Additional UI for showing elective groups (conceptual)
-  const electiveGroups = {};
-  subjects.filter(s => s.elective).forEach(subject => {
-    const allocation = allocations.find(a => a.subjectId === subject.id);
-    if (allocation) {
-      if (!electiveGroups[allocation.teacherId]) electiveGroups[allocation.teacherId] = [];
-      electiveGroups[allocation.teacherId].push(subject.name);
+      alert('Assignments successfully saved to backend!');
+    } catch (err) {
+      console.error('Error saving assignments:', err);
+      alert('Failed to save assignments');
     }
-  });
-
-  if (loading) {
-    return <div>Loading data...</div>;
-  }
+  };
 
   return (
-    <div style={{ padding: '20px' }}>
-      <h1>Subject Teacher Allocation</h1>
-      <h2>Allocations</h2>
-      <table border="1" style={{ width: '100%', marginBottom: '20px' }}>
-        <thead>
-          <tr>
-            <th>Subject</th>
-            <th>Teacher</th>
-            <th>Hours</th>
-            <th>Load</th>
-          </tr>
-        </thead>
-        <tbody>
-          {allocations.map((allocation, index) => {
-            const subject = subjects.find(s => s.id === allocation.subjectId);
-            const teacher = teachers.find(t => t.id === allocation.teacherId);
-            return (
-              <tr key={index}>
-                <td>{subject?.name}</td>
-                <td>{teacher?.name}</td>
-                <td>{subject?.hours}</td>
-                <td>{teacherLoads[teacher?.id]}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+    <div className="p-6 space-y-6 bg-black text-white min-h-screen">
+      <h2 className="text-3xl font-bold">Assign Subjects to Teachers</h2>
 
-      <h2>Elective Groups (Conceptual)</h2>
-      <table border="1" style={{ width: '100%' }}>
-        <thead>
-          <tr>
-            <th>Teacher</th>
-            <th>Electives Assigned</th>
-          </tr>
-        </thead>
-        <tbody>
-          {Object.entries(electiveGroups).map(([teacherId, group]) => {
-            const teacher = teachers.find(t => t.id == teacherId);
-            return (
-              <tr key={teacherId}>
-                <td>{teacher?.name}</td>
-                <td>{group.join(', ')}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+      {/* Semester Dropdown */}
+      <div>
+        <label className="text-lg mr-2">Semester:</label>
+        <select
+          className="p-2 border border-white rounded bg-black text-white"
+          value={selectedSemester}
+          onChange={(e) => setSelectedSemester(e.target.value)}
+        >
+          {semesters.map((sem, index) => (
+            <option key={index} value={sem}>{sem}</option>
+          ))}
+        </select>
+      </div>
+
+      {/* Assignment Table */}
+      <div className="overflow-auto">
+        <table className="min-w-full border border-white mt-4">
+          <thead>
+            <tr className="bg-gray-900">
+              <th className="border border-white px-4 py-2">Teachers</th>
+              {subjectsData.map(subject => (
+                <th key={subject.id} className="border border-white px-4 py-2">{subject.name}</th>
+              ))}
+              <th className="border border-white px-4 py-2">Load</th>
+            </tr>
+          </thead>
+          <tbody>
+            {teachersData.map(teacher => {
+              const teacherKey = teacher.id.toString();
+              const load = calculateWeeklyLoad(teacher.id);
+              const isOverloaded = load >= 19;
+              return (
+                <tr key={teacher.id} className={isOverloaded ? 'bg-red-900' : 'bg-gray-800'}>
+                  <td className="border border-white px-4 py-2 text-center font-semibold">{teacher.code}</td>
+                  {subjectsData.map(subject => {
+                    const currentPref = assignments[teacherKey]?.[subject.id] || 0;
+                    return (
+                      <td key={subject.id} className="border border-white px-2 py-2 text-center">
+                        <Button
+                          className="text-xs p-1 bg-white text-black hover:bg-gray-300"
+                          disabled={isOverloaded}
+                          onClick={() => handleSubjectClick(teacher.id, subject.id)}
+                        >
+                          {preferenceLevels[currentPref]}
+                        </Button>
+                      </td>
+                    );
+                  })}
+                  <td className="border border-white px-4 py-2 text-center">
+                    {load} / 19 hrs
+                    <Progress value={(load / 19) * 100} className="h-2 mt-1 bg-white" />
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <Button onClick={handleNext} className="mt-6 bg-white text-black hover:bg-gray-300">
+        Next
+      </Button>
     </div>
   );
-};
-
-export default SubjectAllocationPage;
+}
